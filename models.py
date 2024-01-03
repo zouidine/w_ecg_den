@@ -161,7 +161,7 @@ class IDWT_1D(Module):
         self.get_matrix()
         return IDWTFunction_1D.apply(L, H, self.matrix_low, self.matrix_high)
 
-  class Conv1d(nn.Conv1d):
+class Conv1d(nn.Conv1d):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.reset_parameters()
@@ -294,7 +294,7 @@ class WModel(nn.Module):
 
         return self.idwt(xl, xh)
 
-  class Model(nn.Module):
+class Model(nn.Module):
     def __init__(self, feats=64):
         super(Model, self).__init__()
         self.stream_x = nn.ModuleList([
