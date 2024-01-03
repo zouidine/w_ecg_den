@@ -3,6 +3,7 @@ import glob
 import math
 import numpy as np
 import _pickle as pickle
+from scipy.signal import resample_poly
 
 def prepare_NSTDB(NSTDBPath):
     bw_signals, bw_fields = wfdb.rdsamp(NSTDBPath + 'bw')
