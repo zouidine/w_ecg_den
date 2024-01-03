@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import Module
 import torch.nn.functional as F
+from torch.autograd import Function
 
 class DWTFunction_1D(Function):
     @staticmethod
