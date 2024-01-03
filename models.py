@@ -35,7 +35,7 @@ class IDWTFunction_1D(Function):
         grad_H = torch.matmul(grad_output, matrix_H.t())
         return grad_L, grad_H, None, None
 
-  class DWT_1D(Module):
+class DWT_1D(Module):
     """
     input: the 1D data to be decomposed -- (N, C, Length)
     output: lfc -- (N, C, Length/2)
