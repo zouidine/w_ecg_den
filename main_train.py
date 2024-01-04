@@ -2,13 +2,13 @@ import os
 import torch
 import numpy as np
 from w_ecg_den.ddpm import DDPM
-from w_ecg_den.models import WModel
+from w_ecg_den.model import ConditionalModel
 from w_ecg_den.training import train, evaluate
 from sklearn.model_selection import train_test_split
 from w_ecg_den.datapreparation import Data_Preparation
 from torch.utils.data import DataLoader, Subset, TensorDataset
 
-foldername = "/content/drive/MyDrive/Colab/ISIVC"
+foldername = "./"
 print('folder: ', foldername)
 os.makedirs(foldername, exist_ok=True)
 
@@ -65,9 +65,15 @@ val_loader = DataLoader(val_set, batch_size=config['train']['batch_size'],
                         drop_last=True, num_workers=0)
 test_loader = DataLoader(test_set, batch_size=50, num_workers=0)
 
-base_model = WModel(w_name="haar", feats=config['train']['feats']).to(device)
+base_model = ConditionalModel(config['train']['feats']).to(device)
 model = DDPM(base_model, config, device)
 print('training ...')
 train(model, config['train'], train_loader, device,
       valid_loader=val_loader, valid_epoch_interval=1,
-      foldername=foldername+'/models')
+      foldername=foldername+'/checkpoint')
+
+#don't use before final model is determined
+print('eval test ...')
+output_path = "checkpoint/bestmodel.pth"
+model.load_state_dict(torch.load(output_path))
+evaluate(model, test_loader, 5, device, foldername=foldername)
