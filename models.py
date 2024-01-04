@@ -191,28 +191,40 @@ class PositionalEncoding(nn.Module):
             [torch.sin(encoding), torch.cos(encoding)], dim=-1)
         return encoding
 
-class ResBlock(nn.Module):
+class FeatureWiseAffine(nn.Module):
+    def __init__(self, in_channels, out_channels, use_affine_level=False):
+        super().__init__()
+        self.use_affine_level = use_affine_level
+        self.noise_func = nn.Sequential(
+            nn.Linear(in_channels, out_channels*(1+self.use_affine_level))
+        )
+
+    def forward(self, x, noise_embed):
+        batch = x.shape[0]
+        if self.use_affine_level:
+            gamma, beta = self.noise_func(noise_embed).view(
+                batch, -1, 1).chunk(2, dim=1)
+            x = (1 + gamma) * x + beta
+        else:
+            x = x + self.noise_func(noise_embed).view(batch, -1, 1)
+        return x
+
+class HNFBlock(nn.Module):
     def __init__(self, input_size, hidden_size, dilation):
         super().__init__()
 
         self.filters = nn.ModuleList([
-            Conv1d(input_size, hidden_size//4, 3, dilation=dilation, 
-                   padding=1*dilation, padding_mode='reflect'),
-            Conv1d(input_size, hidden_size//4, 5, dilation=dilation, 
-                   padding=2*dilation, padding_mode='reflect'),
-            Conv1d(input_size, hidden_size//4, 7, dilation=dilation, 
-                   padding=3*dilation, padding_mode='reflect'),
-            Conv1d(input_size, hidden_size//4, 9, dilation=dilation, 
-                   padding=4*dilation, padding_mode='reflect'),
+            Conv1d(input_size, hidden_size//4, 3, dilation=dilation, padding=1*dilation, padding_mode='reflect'),
+            Conv1d(hidden_size, hidden_size//4, 5, dilation=dilation, padding=2*dilation, padding_mode='reflect'),
+            Conv1d(hidden_size, hidden_size//4, 9, dilation=dilation, padding=4*dilation, padding_mode='reflect'),
+            Conv1d(hidden_size, hidden_size//4, 15, dilation=dilation, padding=7*dilation, padding_mode='reflect'),
         ])
 
-        self.conv_1 = Conv1d(hidden_size, hidden_size, 9, padding=4, 
-                             padding_mode='reflect')
+        self.conv_1 = Conv1d(hidden_size, hidden_size, 9, padding=4, padding_mode='reflect')
 
         self.norm = nn.InstanceNorm1d(hidden_size//2)
 
-        self.conv_2 = Conv1d(hidden_size, hidden_size, 9, padding=4, 
-                             padding_mode='reflect')
+        self.conv_2 = Conv1d(hidden_size, hidden_size, 9, padding=4, padding_mode='reflect')
 
     def forward(self, x):
         residual = x
@@ -231,54 +243,51 @@ class ResBlock(nn.Module):
 
         return filts + residual
 
-class Projection(nn.Module):
+class Bridge(nn.Module):
     def __init__(self, input_size, hidden_size):
         super().__init__()
-        self.noise_func = nn.Linear(input_size, hidden_size)
-        self.input_conv = Conv1d(input_size, input_size, 3, padding=1, 
-                                 padding_mode='reflect')
-        self.output_conv = Conv1d(input_size, hidden_size, 3, padding=1, 
-                                  padding_mode='reflect')
+        self.encoding = FeatureWiseAffine(input_size, hidden_size)
+        self.input_conv = Conv1d(input_size, input_size, 3, padding=1, padding_mode='reflect')
+        self.output_conv = Conv1d(input_size, hidden_size, 3, padding=1, padding_mode='reflect')
 
     def forward(self, x, noise_embed):
-        batch = x.shape[0]
         x = self.input_conv(x)
-        x = x + self.noise_func(noise_embed).view(batch, -1, 1)
+        x = self.encoding(x, noise_embed)
         return self.output_conv(x)
 
-class WModel(nn.Module):
-    def __init__(self, w_name="haar", feats=64):
-        super(WModel, self).__init__()
+class ConditionalModel(nn.Module):
+    def __init__(self, feats=64):
+        super(ConditionalModel, self).__init__()
         self.stream_x = nn.ModuleList([
             nn.Sequential(Conv1d(2, feats, 9, padding=4, padding_mode='reflect'),
                           nn.LeakyReLU(0.2)),
-            ResBlock(feats, feats, 1),
-            ResBlock(feats, feats, 2),
-            ResBlock(feats, feats, 4),
-            ResBlock(feats, feats, 2)
+            HNFBlock(feats, feats, 1),
+            HNFBlock(feats, feats, 2),
+            HNFBlock(feats, feats, 4),
+            HNFBlock(feats, feats, 2)
         ])
 
         self.stream_cond = nn.ModuleList([
             nn.Sequential(Conv1d(2, feats, 9, padding=4, padding_mode='reflect'),
                           nn.LeakyReLU(0.2)),
-            ResBlock(feats, feats, 1),
-            ResBlock(feats, feats, 2),
-            ResBlock(feats, feats, 4),
-            ResBlock(feats, feats, 2)
+            HNFBlock(feats, feats, 1),
+            HNFBlock(feats, feats, 2),
+            HNFBlock(feats, feats, 4),
+            HNFBlock(feats, feats, 2)
         ])
 
         self.embed = PositionalEncoding(feats)
 
-        self.proj = nn.ModuleList([
-            Projection(feats, feats),
-            Projection(feats, feats),
-            Projection(feats, feats),
-            Projection(feats, feats)
+        self.bridge = nn.ModuleList([
+            Bridge(feats, feats),
+            Bridge(feats, feats),
+            Bridge(feats, feats),
+            Bridge(feats, feats)
         ])
 
         self.conv_out = Conv1d(feats, 2, 9, padding=4, padding_mode='reflect')
-        self.dwt = DWT_1D(w_name)
-        self.idwt = IDWT_1D(w_name)
+        self.dwt = DWT_1D("haar")
+        self.iwt = IDWT_1D("haar")
 
     def forward(self, x, cond, noise_scale):
         xl, xh = self.dwt(x)
@@ -287,7 +296,7 @@ class WModel(nn.Module):
         cond = torch.cat([xl, xh], dim=1)
         noise_embed = self.embed(noise_scale)
         xs = []
-        for layer, br in zip(self.stream_x, self.proj):
+        for layer, br in zip(self.stream_x, self.bridge):
             x = layer(x)
             xs.append(br(x, noise_embed))
 
@@ -296,48 +305,4 @@ class WModel(nn.Module):
         cond = self.conv_out(cond)
         xl, xh = cond[:, 0, :].unsqueeze(1), cond[:, 1, :].unsqueeze(1)
 
-        return self.idwt(xl, xh)
-
-class Model(nn.Module):
-    def __init__(self, feats=64):
-        super(Model, self).__init__()
-        self.stream_x = nn.ModuleList([
-            nn.Sequential(Conv1d(1, feats, 9, padding=4, padding_mode='reflect'),
-                          nn.LeakyReLU(0.2)),
-            ResBlock(feats, feats, 1),
-            ResBlock(feats, feats, 2),
-            ResBlock(feats, feats, 4),
-            ResBlock(feats, feats, 2)
-        ])
-
-        self.stream_cond = nn.ModuleList([
-            nn.Sequential(Conv1d(1, feats, 9, padding=4, padding_mode='reflect'),
-                          nn.LeakyReLU(0.2)),
-            ResBlock(feats, feats, 1),
-            ResBlock(feats, feats, 2),
-            ResBlock(feats, feats, 4),
-            ResBlock(feats, feats, 2)
-        ])
-
-        self.embed = PositionalEncoding(feats)
-
-        self.proj = nn.ModuleList([
-            Projection(feats, feats),
-            Projection(feats, feats),
-            Projection(feats, feats),
-            Projection(feats, feats)
-        ])
-
-        self.conv_out = Conv1d(feats, 1, 9, padding=4, padding_mode='reflect')
-
-    def forward(self, x, cond, noise_scale):
-        noise_embed = self.embed(noise_scale)
-        xs = []
-        for layer, br in zip(self.stream_x, self.proj):
-            x = layer(x)
-            xs.append(br(x, noise_embed))
-
-        for x, layer in zip(xs, self.stream_cond):
-            cond = layer(cond) + x
-
-        return self.conv_out(cond)
+        return self.iwt(xl, xh)
